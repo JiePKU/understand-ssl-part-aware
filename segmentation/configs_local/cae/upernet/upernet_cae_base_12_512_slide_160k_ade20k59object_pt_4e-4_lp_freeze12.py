@@ -70,27 +70,6 @@ lr_config = dict(_delete_=True, policy='poly',
 data=dict(samples_per_gpu=2)
 find_unused_parameters = True
 
-#test_pipeline = [
-#    dict(type='LoadImageFromFile'),
-#    dict(
-#        type='MultiScaleFlipAug',
-#        img_scale=(2048, 512),
-#        img_ratios=[0.5, 0.75, 1.0, 1.25, 1.5, 1.75],
-#        flip=True,
-#        transforms=[
-#            dict(type='SETR_Resize', keep_ratio=True,
-#                 crop_size=crop_size, setr_multi_scale=True),
-#            dict(type='RandomFlip'),
-#            dict(type='Normalize', **img_norm_cfg),
-#            dict(type='ImageToTensor', keys=['img']),
-#            dict(type='Collect', keys=['img']),
-#        ])
-#]
-#data = dict(
-#    val=dict(pipeline=test_pipeline),
-#    test=dict(pipeline=test_pipeline), 
-#    samples_per_gpu=2, 
-#)
 
 runner = dict(type='IterBasedRunnerAmp')
 checkpoint_config = dict(by_epoch=False, interval=8000)

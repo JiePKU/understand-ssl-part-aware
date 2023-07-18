@@ -1,27 +1,26 @@
 """
-Here is some command example for each task
+Here are some command examples for each task
 """
 
 """ 
 for pr_patch_retrieval_imagenet_vis
 """
 
-python3 pr_patch_retrieval.py --pretrained_model cae \
-  -a vit_base -j 16 --gpu 5 /home/ssd9/wangxiaodi03/workspace/wangxiaodi03/data/imagenet/val/
+python3 pr_patch_retrieval_imagenet_vis.py --pretrained_model mae \
+  -a vit_base -j 8 --gpu 5 /home/ssd9/wangxiaodi03/workspace/wangxiaodi03/data/imagenet/val/
 
 """
 for pr_patch_retrieval
 """
 
-## for cub 
+## for cub dataset default
 
-python3 pr_patch_retrieval_cub200.py --pretrained_model cae \
-  -a vit_base -j 16 --gpu 1 /home/ssd8/hanshumin/imagenet1k/val/
-
+python3 pr_patch_retrieval.py --pretrained_model mae \
+  -a vit_base -j 8 --gpu 1 
 ## for coco
 
-python3 pr_patch_retrieval_cub200.py --pretrained_model cae --dataset_name coco \
-  -a vit_base -j 16 --gpu 0 /home/ssd8/hanshumin/imagenet1k/val/
+python3 pr_patch_retrieval.py --pretrained_model cae --dataset_name coco \
+  -a vit_base -j 8 --gpu 0 
 
 
 """

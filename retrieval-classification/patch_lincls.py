@@ -28,13 +28,10 @@ import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
 import torchvision.models as torchvision_models
 
 import moco.builder
 import moco.loader
-import moco.optimizer
 
 import vits
 
@@ -45,8 +42,6 @@ torchvision_model_names = sorted(name for name in torchvision_models.__dict__
 model_names = ['vit_small', 'vit_base', 'vit_conv_small', 'vit_conv_base'] + torchvision_model_names
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-# parser.add_argument('data', metavar='DIR',
-#                     help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
                     choices=model_names,
                     help='model architecture: ' +
@@ -97,14 +92,12 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 # additional configs:
 parser.add_argument('--pretrained', default='', type=str,
                     help='path to moco pretrained checkpoint')
-
 parser.add_argument('--pretrained_model', default='cae', type=str,)
 parser.add_argument('--model_scale', default='base', type=str,)
 parser.add_argument('--dataset_name', default='cub200', type=str,)
 parser.add_argument('--cls_head_type', default='linear', type=str,)
 
 best_acc1 = 0
-
 
 class LP_BatchNorm(_NormBase):
     """ A variant used in linear probing.
@@ -128,9 +121,7 @@ class LP_BatchNorm(_NormBase):
         We use is_train instead of self.training.
         """
         self._check_input_dim(input)
-        # exponential_average_factor is set to self.momentum
-        # (when it is available) only so that it gets updated
-        # in ONNX graph when this node is exported to ONNX.
+
         if self.momentum is None:
             exponential_average_factor = 0.0
         else:
@@ -259,8 +250,7 @@ Decoder block with bool_masked_pos argument
 '''
 class DecoderBlockSimple(nn.Module):
 
-    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., init_values=None, act_layer=nn.GELU, norm_layer=nn.LayerNorm,
+    def __init__(self, dim, num_heads, qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,norm_layer=nn.LayerNorm,
                  window_size=None, attn_head_dim=None):
         super().__init__()
 
@@ -292,7 +282,7 @@ class LinearWrapper(nn.Module):
         embed_dim = self.model.pos_embed.size(2) if hasattr(self.model, 'pos_embed') and self.model.pos_embed is not None else self.model.cls_token.size(2)
         if cls_head_type == 'attentive':
             self.cross_attn = DecoderBlockSimple(
-                embed_dim, 12, mlp_ratio=4, qkv_bias=True,
+                embed_dim, num_heads=12, qkv_bias=True,
                 norm_layer=partial(nn.LayerNorm, eps=1e-6))
             self.query_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
             self.fc_norm = LP_BatchNorm(embed_dim, affine=False)
@@ -423,46 +413,13 @@ def main_worker(gpu, ngpus_per_node, args):
             elif model_scale == 'large_dvae':
                 model = vits.VisionTransformerCAE(embed_dim=1024, depth=24, num_heads=16)
                 checkpoint = torch.load('pretrained_models/cae_dvae_large_1600ep.pth', map_location="cpu")
-            elif model_scale == 'rgb':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/official_cotr_base_v1.2_300epoch_8self_w0.1_dp0.1_checkpoint-299.pth', map_location="cpu")
-            elif model_scale == 'rgb_randommask_align0_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0.pth', map_location="cpu")
-            elif model_scale == 'rgb_blockmask0.4_align0_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0_blockmask.pth', map_location="cpu")
-            elif model_scale == 'rgb_blockmask0.5_align0.1_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0.1_blockmask0.5.pth', map_location="cpu")
-            elif model_scale == 'mae_base_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_300ep.pth', map_location="cpu")
-            elif model_scale == 'mae_base_300ep_blockmask':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_300ep_blockmask.pth', map_location="cpu")
-            elif model_scale == 'mae_base_300ep_blockmask0.5':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_300ep_blockmask0.5.pth', map_location="cpu")
-            elif model_scale == 'mae_base_1600ep_blockmask0.5':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_1600ep_blockmask0.5.pth', map_location="cpu")
-            elif model_scale == '300ep':
-                model = vits.VisionTransformerCAE()
-                checkpoint = torch.load('pretrained_models/cae_base_300ep.pth', map_location="cpu")
-            elif model_scale == '800ep':
-                model = vits.VisionTransformerCAE()
-                checkpoint = torch.load('pretrained_models/cae_base_800ep.pth', map_location="cpu")
             else:
                 raise NotImplementedError()
-
-            if 'rgb' in model_scale or 'mae' in model_scale:
-                checkpoint = {k:v for k, v in checkpoint['model'].items() if not k.startswith('teacher') and not k.startswith('decoder') and k != 'mask_token' and not k.startswith('alignment') and not k.startswith('regressor')}
-                model.load_state_dict(checkpoint)
-            else:
-                checkpoint = {k[8:]:v for k, v in checkpoint['model'].items() if k.startswith('encoder.')}
-                model.load_state_dict(checkpoint)
+            
+            checkpoint = {k[8:]:v for k, v in checkpoint['model'].items() if k.startswith('encoder.')}
+            model.load_state_dict(checkpoint)
             print('model loaded')
+
         elif pretrain_model == 'clip':
             mean = [0.48145466, 0.4578275, 0.40821073]
             std = [0.26862954, 0.26130258, 0.27577711]
@@ -482,7 +439,6 @@ def main_worker(gpu, ngpus_per_node, args):
             assert model_scale in ['base', 'base_teacher']
             model = vits.vit_base_dino()
             checkpoint = torch.load('pretrained_models/dino_vitbase16_pretrain_full_checkpoint.pth', map_location='cpu')
-
             if 'teacher' not in model_scale:
                 checkpoint = {(k[16:] if k.startswith('module.backbone.') else k[7:]): v for k, v in checkpoint['student'].items() if k.startswith('module.')}
             else:
@@ -511,18 +467,16 @@ def main_worker(gpu, ngpus_per_node, args):
         linear_keyword = 'fc'
 
     dataset_name = args.dataset_name
-
-
     include_other_parts = False
 
     if dataset_name == 'cub200':
-        image_root = '/root/paddlejob/workspace/env_run/qjy_dataset_env/CUB_200_2011/'
+        image_root = '/home/ssd9/qjy/patch_embed_search/CUB_200_2011/'
         dataset_cls = moco.loader.PatchLoaderCUB200
         keypoint_cls_list = [11, 12, 9, 14]  # start from 1
         keypoint_cls_set_name = '11120914'
 
     elif dataset_name == 'coco':
-        image_root = '/root/paddlejob/workspace/env_run/qjy_dataset_env/mscoco/'
+        image_root = '/home/ssd2/data/mscoco/'
         dataset_cls = moco.loader.PatchLoaderCOCO
         keypoint_cls_list = [1, 11, 16]  # start from 1
         keypoint_cls_set_name = '011116'
@@ -602,7 +556,6 @@ def main_worker(gpu, ngpus_per_node, args):
     parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
     print('parameters to learn:')
     print([n for n, p in model.named_parameters() if p.requires_grad])
-    # assert len(parameters) == 2  # weight, bias
 
     optimizer = torch.optim.SGD(parameters, init_lr,
                                 momentum=args.momentum,
@@ -633,7 +586,7 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     # Data loading code
-    patch_root = f'/home/ssd9/qjy/patch_embed_search/patches_{dataset_name}_{keypoint_cls_set_name}/'
+    patch_root = f'/home/ssd9/qjy/patch_embed_search/patches_{dataset_name}_{keypoint_cls_set_name}/'  ## saved in part retrieval task
 
     if include_other_parts:
         patch_root = patch_root[:-1] + '_iop/'
@@ -782,36 +735,6 @@ def validate(val_loader, model, criterion, args):
               .format(top1=top1, top5=top5))
 
     return top1.avg
-
-
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename)
-    if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
-
-
-def sanity_check(state_dict, pretrained_weights, linear_keyword):
-    """
-    Linear classifier should not change any weights other than the linear layer.
-    This sanity check asserts nothing wrong happens (e.g., BN stats updated).
-    """
-    print("=> loading '{}' for sanity check".format(pretrained_weights))
-    checkpoint = torch.load(pretrained_weights, map_location="cpu")
-    state_dict_pre = checkpoint['state_dict']
-
-    for k in list(state_dict.keys()):
-        # only ignore linear layer
-        if '%s.weight' % linear_keyword in k or '%s.bias' % linear_keyword in k:
-            continue
-
-        # name in pretrained model
-        k_pre = 'module.base_encoder.' + k[len('module.'):] \
-            if k.startswith('module.') else 'module.base_encoder.' + k
-
-        assert ((state_dict[k].cpu() == state_dict_pre[k_pre]).all()), \
-            '{} is changed in linear classifier training.'.format(k)
-
-    print("=> sanity check passed.")
 
 
 class AverageMeter(object):

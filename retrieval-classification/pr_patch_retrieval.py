@@ -27,20 +27,14 @@ import torch
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
-import torch.distributed as dist
 import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
 import torchvision.models as torchvision_models
-import PIL
-from PIL import Image, ImageDraw
 import torch.nn.functional as F
 import moco.builder
 import moco.loader
-import moco.optimizer
 import vits
 
 
@@ -79,23 +73,10 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
-parser.add_argument('--world-size', default=-1, type=int,
-                    help='number of nodes for distributed training')
-parser.add_argument('--rank', default=-1, type=int,
-                    help='node rank for distributed training')
-parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
-                    help='url used to set up distributed training')
-parser.add_argument('--dist-backend', default='nccl', type=str,
-                    help='distributed backend')
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--gpu', default=None, type=int,
                     help='GPU id to use.')
-parser.add_argument('--multiprocessing-distributed', action='store_true',
-                    help='Use multi-processing distributed training to launch '
-                         'N processes per node, which has N GPUs. This is the '
-                         'fastest way to use PyTorch for either single node or '
-                         'multi node data parallel training')
 
 # moco specific configs:
 parser.add_argument('--moco-dim', default=256, type=int,
@@ -111,17 +92,6 @@ parser.add_argument('--moco-t', default=1.0, type=float,
                     help='softmax temperature (default: 1.0)')
 
 # vit specific configs:
-parser.add_argument('--stop-grad-conv1', action='store_true',
-                    help='stop-grad after first conv, or patch embedding')
-
-# other upgrades
-parser.add_argument('--optimizer', default='lars', type=str,
-                    choices=['lars', 'adamw'],
-                    help='optimizer used (default: lars)')
-parser.add_argument('--warmup-epochs', default=10, type=int, metavar='N',
-                    help='number of warmup epochs')
-parser.add_argument('--crop-min', default=0.08, type=float,
-                    help='minimum scale for random cropping (default: 0.08)')
 
 parser.add_argument('--pretrained_model', default='cae', type=str,)
 parser.add_argument('--dataset_name', default='cub200', type=str,)
@@ -145,54 +115,25 @@ def main():
         warnings.warn('You have chosen a specific GPU. This will completely '
                       'disable data parallelism.')
 
-    if args.dist_url == "env://" and args.world_size == -1:
-        args.world_size = int(os.environ["WORLD_SIZE"])
-
-    args.distributed = args.world_size > 1 or args.multiprocessing_distributed
-
     ngpus_per_node = torch.cuda.device_count()
-    if args.multiprocessing_distributed:
-        # Since we have ngpus_per_node processes per node, the total world_size
-        # needs to be adjusted accordingly
-        args.world_size = ngpus_per_node * args.world_size
-        # Use torch.multiprocessing.spawn to launch distributed processes: the
-        # main_worker process function
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
-    else:
-        # Simply call main_worker function
-        main_worker(args.gpu, ngpus_per_node, args)
+
+    # Simply call main_worker function
+    main_worker(args.gpu, ngpus_per_node, args)
 
 
 @torch.no_grad()
 def main_worker(gpu, ngpus_per_node, args):
     args.gpu = gpu
 
-    # suppress printing if not first GPU on each node
-    if args.multiprocessing_distributed and (args.gpu != 0 or args.rank != 0):
-        def print_pass(*args):
-            pass
-        builtins.print = print_pass
-
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
 
-    if args.distributed:
-        if args.dist_url == "env://" and args.rank == -1:
-            args.rank = int(os.environ["RANK"])
-        if args.multiprocessing_distributed:
-            # For multiprocessing distributed training, rank needs to be the
-            # global rank among all the processes
-            args.rank = args.rank * ngpus_per_node + gpu
-        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                world_size=args.world_size, rank=args.rank)
-        torch.distributed.barrier()
-    # create model
     print("=> creating model '{}'".format(args.arch))
     pretrain_model = args.pretrained_model
     model_scale = args.model_scale
 
     mean=[0.485, 0.456, 0.406]
-    std=[0.229, 0.224, 0.225]
+    std=[0.229, 0.224, 0.225]  # we use imagenet mean and std
     
     if args.arch.startswith('vit'):
         if pretrain_model == 'vit':
@@ -202,12 +143,14 @@ def main_worker(gpu, ngpus_per_node, args):
                 model = vits.vit_large_patch16_224(pretrained=True)
             else:
                 raise NotImplementedError()
+            
         elif pretrain_model == 'moco':
             assert model_scale == 'base'
             model = moco.builder.MoCo_ViT(
                 partial(vits.__dict__[args.arch], stop_grad_conv1=args.stop_grad_conv1),
                 args.moco_dim, args.moco_mlp_dim, args.moco_t)
             args.resume = 'pretrained_models/vit-b-300ep.pth.tar'
+
         elif pretrain_model == 'cae':
             if model_scale == 'base':
                 model = vits.VisionTransformerCAE()
@@ -221,64 +164,27 @@ def main_worker(gpu, ngpus_per_node, args):
             elif model_scale == 'large_dvae':
                 model = vits.VisionTransformerCAE(embed_dim=1024, depth=24, num_heads=16)
                 checkpoint = torch.load('pretrained_models/cae_dvae_large_1600ep.pth', map_location="cpu")
-            elif model_scale == 'rgb':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/official_cotr_base_v1.2_300epoch_8self_w0.1_dp0.1_checkpoint-299.pth', map_location="cpu")
-            elif model_scale == 'rgb_randommask_align0_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0.pth', map_location="cpu")
-            elif model_scale == 'rgb_blockmask0.4_align0_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0_blockmask.pth', map_location="cpu")
-            elif model_scale == 'rgb_blockmask0.5_align0.1_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0.1_blockmask0.5.pth', map_location="cpu")
-            elif model_scale == 'mae_base_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_300ep.pth', map_location="cpu")
-            elif model_scale == 'mae_base_300ep_blockmask':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_300ep_blockmask.pth', map_location="cpu")
-            elif model_scale == 'mae_base_300ep_blockmask0.5':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_300ep_blockmask0.5.pth', map_location="cpu")
-            elif model_scale == 'mae_base_1600ep_blockmask0.5':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_1600ep_blockmask0.5.pth', map_location="cpu")
-            elif model_scale == '300ep':
-                model = vits.VisionTransformerCAE()
-                checkpoint = torch.load('pretrained_models/cae_base_300ep.pth', map_location="cpu")
-            elif model_scale == '800ep':
-                model = vits.VisionTransformerCAE()
-                checkpoint = torch.load('pretrained_models/cae_base_800ep.pth', map_location="cpu")
             else:
                 raise NotImplementedError()
+            checkpoint = {k[8:]:v for k, v in checkpoint['model'].items() if k.startswith('encoder.')}
+            model.load_state_dict(checkpoint)
 
-            if 'rgb' in model_scale or 'mae' in model_scale:
-                checkpoint = {k:v for k, v in checkpoint['model'].items() if not k.startswith('teacher') and not k.startswith('decoder') and k != 'mask_token' and not k.startswith('alignment') and not k.startswith('regressor')}
-                model.load_state_dict(checkpoint)
-            else:
-                checkpoint = {k[8:]:v for k, v in checkpoint['model'].items() if k.startswith('encoder.')}
-                model.load_state_dict(checkpoint)
         elif pretrain_model == 'clip':
             mean = [0.48145466, 0.4578275, 0.40821073]
             std = [0.26862954, 0.26130258, 0.27577711]
             model = torch.jit.load('pretrained_models/CLIP-ViT-B-16.pt', map_location="cpu").eval()
             model = vits.build_clip_model(model.state_dict())
+
         elif pretrain_model == 'mae':
             if model_scale == 'base':
                 model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_pretrain_vit_base.pth', map_location='cpu')
+                checkpoint = torch.load('../../patch_embed_search/pretrained_models/mae_pretrain_vit_base.pth', map_location='cpu')
             elif model_scale == 'large':
                 model = vits.mae_vit_large_patch16()
                 checkpoint = torch.load('pretrained_models/mae_pretrain_vit_large.pth', map_location='cpu')
             else:
                 raise NotImplementedError()
             model.load_state_dict(checkpoint['model'])
-        elif pretrain_model == 'long-mae':
-            model = vits.mae_vit_base_patch16(img_size=448)
-            checkpoint = torch.load('pretrained_models/vitb_dec384d12h8b_800ep_img448_crop0.2-1.0_maskds2.pth', map_location='cpu')
-            model.load_state_dict(checkpoint['model'], strict=False)
 
         elif pretrain_model == 'dino':
             assert model_scale in ['base', 'base_teacher']
@@ -289,18 +195,21 @@ def main_worker(gpu, ngpus_per_node, args):
             else:
                 checkpoint = {(k[9:] if k.startswith('backbone.') else k): v for k, v in checkpoint['teacher'].items()}
             model.load_state_dict(checkpoint)
+
         elif pretrain_model == 'ibot':
             assert model_scale in ['base']
             model = vits.vit_base_ibot()
             checkpoint = torch.load('pretrained_models/ibot_checkpoint.pth', map_location='cpu')
             checkpoint = {(k[9:] if k.startswith('backbone.') else k): v for k, v in checkpoint['teacher'].items()}
             model.load_state_dict(checkpoint)
+
         elif pretrain_model == 'beit':
             assert model_scale == 'base'
             model = vits.BEiT()
             model.init_weights('pretrained_models/beit_base_standard_epoch800_checkpoint-799.pth')
         else:
             raise NotImplementedError()
+        
     else:
         model = moco.builder.MoCo_ResNet(
             partial(torchvision_models.__dict__[args.arch], zero_init_residual=True),
@@ -310,37 +219,14 @@ def main_worker(gpu, ngpus_per_node, args):
     args.lr = args.lr * args.batch_size / 256
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
-    elif args.distributed:
-        # apply SyncBN
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        # For multiprocessing distributed, DistributedDataParallel constructor
-        # should always set the single device scope, otherwise,
-        # DistributedDataParallel will use all available devices.
-        if args.gpu is not None:
-            torch.cuda.set_device(args.gpu)
-            model.cuda(args.gpu)
-            # When using a single GPU per process and per
-            # DistributedDataParallel, we need to divide the batch size
-            # ourselves based on the total number of GPUs we have
-            args.batch_size = int(args.batch_size / args.world_size)
-            args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        else:
-            model.cuda()
-            # DistributedDataParallel will divide and allocate batch_size to all
-            # available GPUs if device_ids are not set
-            model = torch.nn.parallel.DistributedDataParallel(model)
-    elif args.gpu is not None:
+
+    if args.gpu is not None:
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
-        # comment out the following line for debugging
-        # raise NotImplementedError("Only DistributedDataParallel is supported.")
     else:
-        # AllGather/rank implementation in this code only supports DistributedDataParallel.
-        raise NotImplementedError("Only DistributedDataParallel is supported.")
-    # print(model) # print model after SyncBatchNorm
-
-    # optionally resume from a checkpoint
+        raise NotImplementedError("need specify the gpu id")
+    
+    # optionally resume from a checkpoint. related to moco v3
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
@@ -359,18 +245,13 @@ def main_worker(gpu, ngpus_per_node, args):
             print("=> no checkpoint found at '{}'".format(args.resume))
 
     cudnn.benchmark = True
-
     model.eval()
-
     dataset_name = args.dataset_name
-    # dataset_name = 'cub200'
-    # dataset_name = 'coco'
-
     include_other_parts = False
-    # include_other_parts = True
+
 
     if dataset_name == 'cub200':
-        image_root = '/root/paddlejob/workspace/env_run/data/CUB_200_2011/'
+        image_root = '/home/ssd9/qjy/patch_embed_search/CUB_200_2011/'
         dataset_cls = moco.loader.PatchLoaderCUB200
         keypoint_cls_list = [11, 12, 9, 14]  # start from 1
         keypoint_cls_set_name = '11120914'
@@ -393,9 +274,6 @@ def main_worker(gpu, ngpus_per_node, args):
     if include_other_parts:
         cache_path = cache_path.replace('.pth', '_iop.pth')
         patch_root = patch_root[:-1] + '_iop/'
-
-    split_ratio = 4
-    patch_num = ((split_ratio-1)*2 + 1)**2
 
     # feature extraction
     if not os.path.exists(cache_path):
@@ -428,16 +306,27 @@ def main_worker(gpu, ngpus_per_node, args):
             if i % 20 == 0:
                 print(i, time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())))
                 sys.stdout.flush()
+    
+        """
+        To save the extracted features to file in cache_path
+        """
+        # os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        # if total_state_dict['projection'][0].shape[0] > 4096:
+        #     print('projection output has too many channels:', total_state_dict['projection'][0].shape[0], ', projection output will not be saved')
+        #     tmp = {k: v for k, v in total_state_dict.items() if k != 'projection'}
+        #     torch.save(tmp, cache_path)
+        # else:
+        #     torch.save(total_state_dict, cache_path)
+
     else:
         print("=> loading cache '{}'".format(cache_path))
         total_state_dict = torch.load(cache_path)
         print("=> loaded cache '{}'".format(cache_path))
 
-    similarity_cache_path = cache_path.replace('embeddings', 'similarities')
     if pretrain_model in ('moco', 'clip', 'dino', 'ibot'):
-        calc_acc(total_state_dict, similarity_cache_path, 'projection')
-    calc_acc(total_state_dict, similarity_cache_path)
-    calc_acc(total_state_dict, similarity_cache_path, 'cls_token')
+        calc_acc(total_state_dict,  'projection')
+    calc_acc(total_state_dict,  'embedding')
+    calc_acc(total_state_dict, 'cls_token')
 
 
 def mean(l):
@@ -452,7 +341,7 @@ def del_annid(s):
     return s
 
 
-def calc_acc(total_state_dict, similarity_cache_path, target_feature='embedding'):
+def calc_acc(total_state_dict, target_feature='embedding'):
     patch_names = total_state_dict['patch_names']
     feature_list = total_state_dict[target_feature]
     feature_list = torch.stack(feature_list).float()
@@ -464,14 +353,12 @@ def calc_acc(total_state_dict, similarity_cache_path, target_feature='embedding'
         feature_list = feature_list.cuda()
         split_flag = False
 
-    print(patch_names[0])
+    # print(patch_names[0])
     part_names = [del_annid(os.path.basename(x)[:-4]) for x in patch_names]
-    print(part_names)
-    part_mask_dict = split_part(patch_names, part_names)
-    print(part_names[0])
-    print(part_mask_dict[part_names[0]])
-    print(part_mask_dict[part_names[0]].shape)
-    part_num_dict = {k: v.sum() for k, v in part_mask_dict.items()}
+    part_mask_dict = split_part(part_names)
+    # print(part_names[0])
+    # print(part_mask_dict[part_names[0]])
+    # print(part_mask_dict[part_names[0]].shape)
 
     # sorted_idx_list = []
     batch_size = 16
@@ -522,7 +409,7 @@ def calc_acc(total_state_dict, similarity_cache_path, target_feature='embedding'
     print(len_dict)
 
 
-def split_part(patch_names, part_names):
+def split_part(part_names):
     part_mask_dict = {}
     for part_name in set(part_names):
         part_mask_dict[part_name] = torch.BoolTensor([x == part_name for x in part_names])

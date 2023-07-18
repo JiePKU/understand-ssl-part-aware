@@ -10,11 +10,9 @@ from functools import partial
 
 import torch
 from torch import nn as nn
-import timm
 import torch.nn.functional as F
 
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from timm.models.vision_transformer import VisionTransformer, trunc_normal_, checkpoint_filter_fn
+from timm.models.vision_transformer import VisionTransformer, trunc_normal_
 
 from mmcv_custom import load_checkpoint
 from mmseg.utils import get_root_logger

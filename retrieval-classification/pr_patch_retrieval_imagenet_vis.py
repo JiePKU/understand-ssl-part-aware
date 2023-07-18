@@ -25,20 +25,15 @@ import torch
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
-import torch.distributed as dist
 import torch.optim
-import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
 import torchvision.models as torchvision_models
 import PIL
 from PIL import Image, ImageDraw
 
 import moco.builder
 import moco.loader
-import moco.optimizer
 
 import vits
 
@@ -79,23 +74,10 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
-parser.add_argument('--world-size', default=-1, type=int,
-                    help='number of nodes for distributed training')
-parser.add_argument('--rank', default=-1, type=int,
-                    help='node rank for distributed training')
-parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
-                    help='url used to set up distributed training')
-parser.add_argument('--dist-backend', default='nccl', type=str,
-                    help='distributed backend')
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--gpu', default=None, type=int,
                     help='GPU id to use.')
-parser.add_argument('--multiprocessing-distributed', action='store_true',
-                    help='Use multi-processing distributed training to launch '
-                         'N processes per node, which has N GPUs. This is the '
-                         'fastest way to use PyTorch for either single node or '
-                         'multi node data parallel training')
 
 # moco specific configs:
 parser.add_argument('--moco-dim', default=256, type=int,
@@ -111,18 +93,6 @@ parser.add_argument('--moco-t', default=1.0, type=float,
                     help='softmax temperature (default: 1.0)')
 
 # vit specific configs:
-parser.add_argument('--stop-grad-conv1', action='store_true',
-                    help='stop-grad after first conv, or patch embedding')
-
-# other upgrades
-parser.add_argument('--optimizer', default='lars', type=str,
-                    choices=['lars', 'adamw'],
-                    help='optimizer used (default: lars)')
-parser.add_argument('--warmup-epochs', default=10, type=int, metavar='N',
-                    help='number of warmup epochs')
-parser.add_argument('--crop-min', default=0.08, type=float,
-                    help='minimum scale for random cropping (default: 0.08)')
-
 parser.add_argument('--pretrained_model', default='cae', type=str,)
 parser.add_argument('--model_scale', default='base', type=str,)
 
@@ -144,22 +114,9 @@ def main():
         warnings.warn('You have chosen a specific GPU. This will completely '
                       'disable data parallelism.')
 
-    if args.dist_url == "env://" and args.world_size == -1:
-        args.world_size = int(os.environ["WORLD_SIZE"])
-
-    args.distributed = args.world_size > 1 or args.multiprocessing_distributed
-
     ngpus_per_node = torch.cuda.device_count()
-    if args.multiprocessing_distributed:
-        # Since we have ngpus_per_node processes per node, the total world_size
-        # needs to be adjusted accordingly
-        args.world_size = ngpus_per_node * args.world_size
-        # Use torch.multiprocessing.spawn to launch distributed processes: the
-        # main_worker process function
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
-    else:
-        # Simply call main_worker function
-        main_worker(args.gpu, ngpus_per_node, args)
+    # Simply call main_worker function
+    main_worker(args.gpu, ngpus_per_node, args)
 
 
 @torch.no_grad()
@@ -167,24 +124,11 @@ def main_worker(gpu, ngpus_per_node, args):
     args.gpu = gpu
 
     # suppress printing if not first GPU on each node
-    if args.multiprocessing_distributed and (args.gpu != 0 or args.rank != 0):
-        def print_pass(*args):
-            pass
-        builtins.print = print_pass
 
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
 
-    if args.distributed:
-        if args.dist_url == "env://" and args.rank == -1:
-            args.rank = int(os.environ["RANK"])
-        if args.multiprocessing_distributed:
-            # For multiprocessing distributed training, rank needs to be the
-            # global rank among all the processes
-            args.rank = args.rank * ngpus_per_node + gpu
-        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                world_size=args.world_size, rank=args.rank)
-        torch.distributed.barrier()
+    
     # create model
     print("=> creating model '{}'".format(args.arch))
 
@@ -206,7 +150,6 @@ def main_worker(gpu, ngpus_per_node, args):
     # id_list = []
 
     all_patch_search = -1
-    # all_patch_search = 0
 
     mean=[0.485, 0.456, 0.406]
     std=[0.229, 0.224, 0.225]
@@ -238,38 +181,10 @@ def main_worker(gpu, ngpus_per_node, args):
             elif model_scale == 'large_dvae':
                 model = vits.VisionTransformerCAE(embed_dim=1024, depth=24, num_heads=16)
                 checkpoint = torch.load('pretrained_models/cae_dvae_large_1600ep.pth', map_location="cpu")
-            elif model_scale == 'rgb':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/official_cotr_base_v1.2_300epoch_8self_w0.1_dp0.1_checkpoint-299.pth', map_location="cpu")
-            elif model_scale == 'rgb_randommask_align0_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0.pth', map_location="cpu")
-            elif model_scale == 'rgb_blockmask0.4_align0_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0_blockmask.pth', map_location="cpu")
-            elif model_scale == 'rgb_blockmask0.5_align0.1_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/cae_vcxk_r8d8_base_300ep_alignw0.1_blockmask0.5.pth', map_location="cpu")
-            elif model_scale == 'mae_base_300ep':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_300ep.pth', map_location="cpu")
-            elif model_scale == 'mae_base_300ep_blockmask':
-                model = vits.mae_vit_base_patch16()
-                checkpoint = torch.load('pretrained_models/mae_base_300ep_blockmask.pth', map_location="cpu")
-            elif model_scale == '300ep':
-                model = vits.VisionTransformerCAE()
-                checkpoint = torch.load('pretrained_models/cae_base_300ep.pth', map_location="cpu")
-            elif model_scale == '800ep':
-                model = vits.VisionTransformerCAE()
-                checkpoint = torch.load('pretrained_models/cae_base_800ep.pth', map_location="cpu")
             else:
                 raise NotImplementedError()
-            if 'rgb' in model_scale or 'mae' in model_scale:
-                checkpoint = {k:v for k, v in checkpoint['model'].items() if not k.startswith('teacher') and not k.startswith('decoder') and k != 'mask_token' and not k.startswith('alignment') and not k.startswith('regressor')}
-                model.load_state_dict(checkpoint)
-            else:
-                checkpoint = {k[8:]:v for k, v in checkpoint['model'].items() if k.startswith('encoder.')}
-                model.load_state_dict(checkpoint)
+            checkpoint = {k[8:]:v for k, v in checkpoint['model'].items() if k.startswith('encoder.')}
+            model.load_state_dict(checkpoint)
             print('model loaded')
         elif pretrain_model == 'clip':
             mean = [0.48145466, 0.4578275, 0.40821073]
@@ -290,7 +205,6 @@ def main_worker(gpu, ngpus_per_node, args):
             assert model_scale in ['base', 'base_teacher']
             model = vits.vit_base_dino()
             checkpoint = torch.load('pretrained_models/dino_vitbase16_pretrain_full_checkpoint.pth', map_location='cpu')
-            # print(checkpoint['student'].keys())
             if 'teacher' not in model_scale:
                 raise NotImplementedError()
             else:
@@ -318,37 +232,16 @@ def main_worker(gpu, ngpus_per_node, args):
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
-    elif args.distributed:
-        # apply SyncBN
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        # For multiprocessing distributed, DistributedDataParallel constructor
-        # should always set the single device scope, otherwise,
-        # DistributedDataParallel will use all available devices.
-        if args.gpu is not None:
-            torch.cuda.set_device(args.gpu)
-            model.cuda(args.gpu)
-            # When using a single GPU per process and per
-            # DistributedDataParallel, we need to divide the batch size
-            # ourselves based on the total number of GPUs we have
-            args.batch_size = int(args.batch_size / args.world_size)
-            args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        else:
-            model.cuda()
-            # DistributedDataParallel will divide and allocate batch_size to all
-            # available GPUs if device_ids are not set
-            model = torch.nn.parallel.DistributedDataParallel(model)
+
     elif args.gpu is not None:
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
         # comment out the following line for debugging
         # raise NotImplementedError("Only DistributedDataParallel is supported.")
     else:
-        # AllGather/rank implementation in this code only supports DistributedDataParallel.
-        raise NotImplementedError("Only DistributedDataParallel is supported.")
-    # print(model) # print model after SyncBatchNorm
+        raise NotImplementedError("gpu id musn't be specified")
 
-    # optionally resume from a checkpoint
+    # optionally resume from a checkpoint. ## related to mocov3
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
@@ -372,7 +265,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
     image_root = '/home/ssd6/cxk/CAE/imagenet-samples_10K/'
     patch_root = '/home/ssd4/qjy/patch_embed_search/patches/'
-    # embedding_root = '/home/ssd9/qjy/patch_embed_search_embeddings/'
     embedding_root = '/home/ssd7/qjy/patch_embed_search_embeddings/'
 
     zip_root = f'./patches_zip/{pretrain_model}'
@@ -393,7 +285,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
     os.makedirs(zip_root, exist_ok=True)
     split_ratio = 4
-    patch_num = ((split_ratio-1)*2 + 1)**2
 
     # feature extraction
     if not os.path.exists(cache_path):
@@ -436,8 +327,12 @@ def main_worker(gpu, ngpus_per_node, args):
             if i % 20 == 0:
                 print(i, time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())))
                 sys.stdout.flush()
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        """
+        save the extraced feature
+        """
+        # os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         # torch.save(total_state_dict, cache_path)
+        
     else:
         print("=> loading cache '{}'".format(cache_path))
         total_state_dict = torch.load(cache_path)
@@ -481,12 +376,10 @@ def _retrieval(total_state_dict, query_id, target_feature='embedding', patch_roo
     query = feature_list[query_id:query_id+1]
 
     similarity = torch.nn.functional.cosine_similarity(query, feature_list, 1)
-    # similarity = -torch.nn.functional.pairwise_distance(query.expand(feature_list.size(0), -1), feature_list, 2)
     sims, neighbors = torch.sort(similarity, dim=0, descending=True)
     assert sims.dim() == 1, sims.size()
 
     w, h = 10, 10
-    # w, h = 20, 20
     searched_ids = neighbors[:w*h+1].tolist()
     searched_patch_names = [patch_names[i] for i in searched_ids]
 

@@ -9,43 +9,11 @@ import os
 import random
 import glob
 import json
-
 import torch
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image
 from torchvision import transforms, get_image_backend
 
-
-class TwoCropsTransform:
-    """Take two random crops of one image"""
-
-    def __init__(self, base_transform1, base_transform2):
-        self.base_transform1 = base_transform1
-        self.base_transform2 = base_transform2
-
-    def __call__(self, x):
-        im1 = self.base_transform1(x)
-        im2 = self.base_transform2(x)
-        return [im1, im2]
-
-
-class GaussianBlur(object):
-    """Gaussian blur augmentation from SimCLR: https://arxiv.org/abs/2002.05709"""
-
-    def __init__(self, sigma=[.1, 2.]):
-        self.sigma = sigma
-
-    def __call__(self, x):
-        sigma = random.uniform(self.sigma[0], self.sigma[1])
-        x = x.filter(ImageFilter.GaussianBlur(radius=sigma))
-        return x
-
-
-class Solarize(object):
-    """Solarize augmentation from BYOL: https://arxiv.org/abs/2006.07733"""
-
-    def __call__(self, x):
-        return ImageOps.solarize(x)
 
 
 #### travel the image folder
@@ -71,17 +39,6 @@ def default_loader(path):
         return accimage_loader(path)
     else:
         return pil_loader(path)
-
-
-def imagenets_ann_loader(path, transform=None):
-    gt = Image.open(path)
-    if transform is not None:
-        gt = transform(gt)
-    gt = np.array(gt)
-    gt = gt[:, :, 1] * 256 + gt[:, :, 0]
-    gt = torch.from_numpy(gt.astype(np.float))
-    return gt
-
 
 class PatchLoader(torch.utils.data.Dataset):
     def __init__(self, image_root='/home/ssd6/cxk/CAE/imagenet-samples_10K/', patch_root='./patches/', split_ratio=4, input_size=224,
@@ -170,104 +127,6 @@ class PatchLoader(torch.utils.data.Dataset):
 
         patches = torch.stack(patches)
         return patches, img_name, patch_names
-
-
-class PatchLoaderWithAnn(torch.utils.data.Dataset):
-    def __init__(self, patch_root='/home/ssd4/qjy/patch_embed_search/patches/', split_ratio=4, input_size=224,
-                 num_samples_per_cls=5, image_root_all='/home/ssd8/hanshumin/imagenet1k/val/',
-                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], ann_root='imagenets_seg_annotations/ImageNetS919/validation_segmentation/'):
-        self.patch_root = patch_root
-        self.image_root_all = image_root_all
-
-        self.num_samples_per_cls = num_samples_per_cls
-
-        self.input_size = input_size
-        self.total_size = input_size * split_ratio
-        self.patch_stride = self.input_size // 2
-        self.split_ratio = split_ratio
-
-        self.mean = mean
-        self.std = std
-
-        self.transforms1 = transforms.Compose([
-            transforms.Resize(256, interpolation=3),
-            transforms.CenterCrop(input_size),])
-        self.transforms2 = transforms.Compose([
-            transforms.Resize(self.total_size, interpolation=3),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std)])
-
-        ann_path_list = []
-        image_path_list = []
-        for dir_name in os.listdir(ann_root):
-            ann_dir_path = os.path.join(ann_root, dir_name)
-            dir_path = image_root_all
-            # dir_path = os.path.join(image_root_all, dir_name)
-            for image_name in os.listdir(ann_dir_path):
-                if 'png' in image_name:
-                    image_path = os.path.join(dir_path, image_name.replace('.png', '.JPEG'))
-                    assert os.path.exists(image_path), f'{image_path} not found. ann: {os.path.join(ann_dir_path, image_name)}'
-                    ann_path_list.append(os.path.join(ann_dir_path, image_name))
-                    image_path_list.append(image_path)
-        self.ann_path_list = ann_path_list
-        self.image_path_list = image_path_list
-
-        self.to_pil = transforms.ToPILImage()
-
-    def __len__(self):
-        return len(self.image_path_list)
-
-    def torch_img_to_PIL(self, img):
-        mean = torch.tensor(self.mean).unsqueeze(-1).unsqueeze(-1)
-        std = torch.tensor(self.std).unsqueeze(-1).unsqueeze(-1)
-        img = img * std + mean
-        return self.to_pil(img).convert('RGB')
-
-    def split_patches(self, img):
-        patches = []
-        patches_pil = []
-        pos_params = []
-        for t in range(0, self.total_size-self.input_size+1, self.patch_stride):
-            for l in range(0, self.total_size-self.input_size+1, self.patch_stride):
-                patch = img[:, t:t+self.input_size, l:l+self.input_size]
-                patches.append(patch)
-                patches_pil.append(self.torch_img_to_PIL(patch))
-                pos_params.append((t, t+self.input_size, l, l+self.input_size))
-        return patches, patches_pil, pos_params
-
-    def __getitem__(self, i):
-        img_path = self.image_path_list[i]
-        img_name = os.path.basename(img_path).split('.')[0]
-
-        img_pil = default_loader(img_path)
-        img_pil = self.transforms1(img_pil)
-        img = self.transforms2(img_pil)
-
-        patches, patches_pil, pos_params = self.split_patches(img)
-
-        ann_path = self.ann_path_list[i]
-        ann = imagenets_ann_loader(ann_path, self.transforms1)
-        ann_patches = []
-        for pos_param in pos_params:
-            pos_param = [x//self.split_ratio for x in pos_param]
-            ann_patch = ann[pos_param[0]:pos_param[1], pos_param[2]:pos_param[3]]
-            ann_patches.append(ann_patch)
-        ann_patches = torch.stack(ann_patches)
-
-        img_root = os.path.join(self.patch_root, img_name)
-        if not os.path.exists(os.path.join(img_root, 'origin.jpg')):
-            os.makedirs(img_root, exist_ok=True)
-            img_pil.save(os.path.join(img_root, 'origin.jpg'))
-        patch_names = []
-        for i in range(len(patches)):
-            patch_name = '{}_{}_{}_{}.jpg'.format(*pos_params[i])
-            patch_names.append(patch_name)
-            if not os.path.exists(os.path.join(img_root, patch_name)):
-                patches_pil[i].save(os.path.join(img_root, patch_name))
-
-        patches = torch.stack(patches)
-        return patches, img_name, patch_names, ann_patches
-
 
 class PatchLoaderCUB200(torch.utils.data.Dataset):
     def __init__(self, patch_root='/home/ssd9/qjy/patch_embed_search/patches_cub200/', input_size=224,
@@ -365,12 +224,15 @@ class PatchLoaderCUB200(torch.utils.data.Dataset):
         patch_root = os.path.join(self.patch_root, image_name)
         os.makedirs(patch_root, exist_ok=True)
         patch_path = os.path.join(patch_root, part_name.replace(' ', '_')+'.jpg')
+
+        """
+        save the part image if needed for part classification
+        """
         # self.save(img, os.path.join(patch_root, 'origin.jpg'))
         # self.save(patch, patch_path)
 
         patch = self.transforms(patch)
         return patch, patch_path, self.partid2clsid[patch_info['part_id']]
-
 
 class PatchLoaderCOCO(torch.utils.data.Dataset):
     def __init__(self, patch_root='/home/ssd9/qjy/patch_embed_search/patches_moco/', input_size=224,
@@ -474,6 +336,10 @@ class PatchLoaderCOCO(torch.utils.data.Dataset):
         patch_root = os.path.join(self.patch_root, image_name)
         os.makedirs(patch_root, exist_ok=True)
         patch_path = os.path.join(patch_root, part_name.replace(' ', '_') + f'_{ann_id}.jpg')
+        
+        """
+        save the part image if needed for part classification
+        """
         # self.save(img, os.path.join(patch_root, 'origin.jpg'))
         # self.save(patch, patch_path)
 
