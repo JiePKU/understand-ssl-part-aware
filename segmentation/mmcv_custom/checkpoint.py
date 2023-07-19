@@ -414,15 +414,6 @@ def load_checkpoint(model,
         if 'momentum_encoder' in key:
             state_dict.pop(key)
     
-    # for dino 
-    # for key in all_keys:
-    #     if 'backbone.' in key:
-    #         new_key = key.replace('backbone.', '')
-    #         state_dict[new_key] = state_dict[key]
-    #         state_dict.pop(key)
-    #     # if 'momentum_encoder' in key:
-    #     #     state_dict.pop(key)
-    
     # for ibot, dino
     for key in all_keys:
         if 'module.backbone.' in key:

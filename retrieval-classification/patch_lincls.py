@@ -267,7 +267,6 @@ class DecoderBlockSimple(nn.Module):
         x_q = self.norm1_q_cross(x_q + pos_q)
         x_k = self.norm1_k_cross(x_kv + pos_k)
         x_v = self.norm1_v_cross(x_kv)
-
         x = self.cross_attn(x_q, bool_masked_pos, rel_pos_bias=rel_pos_bias, k=x_k, v=x_v)
 
         return x
@@ -404,9 +403,6 @@ def main_worker(gpu, ngpus_per_node, args):
             if model_scale == 'base':
                 model = vits.VisionTransformerCAE()
                 checkpoint = torch.load('pretrained_models/cae_base_1600ep.pth', map_location="cpu")
-            elif model_scale == 'large':
-                model = vits.VisionTransformerCAE(embed_dim=1024, depth=24, num_heads=16)
-                checkpoint = torch.load('pretrained_models/cae_large_model_run2.pth', map_location="cpu")
             elif model_scale == 'base_dvae':
                 model = vits.VisionTransformerCAE()
                 checkpoint = torch.load('pretrained_models/cae_dvae_base_1600ep.pth', map_location="cpu")
@@ -420,11 +416,6 @@ def main_worker(gpu, ngpus_per_node, args):
             model.load_state_dict(checkpoint)
             print('model loaded')
 
-        elif pretrain_model == 'clip':
-            mean = [0.48145466, 0.4578275, 0.40821073]
-            std = [0.26862954, 0.26130258, 0.27577711]
-            model = torch.jit.load('pretrained_models/CLIP-ViT-B-16.pt', map_location="cpu").eval()
-            model = vits.build_clip_model(model.state_dict())
         elif pretrain_model == 'mae':
             if model_scale == 'base':
                 model = vits.mae_vit_base_patch16()

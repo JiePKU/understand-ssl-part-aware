@@ -3,20 +3,21 @@ Here are some command examples for each task
 """
 
 """ 
-for pr_patch_retrieval_imagenet_vis
+ImageNet part retrieval visualization 
 """
 
 python3 pr_patch_retrieval_imagenet_vis.py --pretrained_model mae \
   -a vit_base -j 8 --gpu 5 /home/ssd9/wangxiaodi03/workspace/wangxiaodi03/data/imagenet/val/
 
 """
-for pr_patch_retrieval
+Part retrieval
 """
 
 ## for cub dataset default
 
 python3 pr_patch_retrieval.py --pretrained_model mae \
   -a vit_base -j 8 --gpu 1 
+
 ## for coco
 
 python3 pr_patch_retrieval.py --pretrained_model cae --dataset_name coco \
@@ -24,7 +25,7 @@ python3 pr_patch_retrieval.py --pretrained_model cae --dataset_name coco \
 
 
 """
-for patch_lincls
+Part linear classification
 """
 
 ### attentive

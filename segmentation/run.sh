@@ -1,6 +1,5 @@
 
 
-
 # mae for lip lp freeze12
 cd /root/paddlejob/workspace/env_run/cae_partseg/CAE-master/downstream_tasks/semantic_segmentation
 mkdir -p logs/mae_for_lip_partseg_lp_freeze12/

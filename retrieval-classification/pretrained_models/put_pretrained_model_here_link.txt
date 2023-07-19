@@ -1,0 +1,25 @@
+
+### DeiT
+https://dl.fbaipublicfiles.com/deit/deit_base_patch16_224-b5f2ef4d.pth
+
+## MoCo v3
+https://dl.fbaipublicfiles.com/moco-v3/vit-b-300ep/vit-b-300ep.pth.tar
+
+## DINO 
+https://dl.fbaipublicfiles.com/dino/dino_vitbase16_pretrain/dino_vitbase16_pretrain_full_checkpoint.pth      ## for part retrieval
+https://dl.fbaipublicfiles.com/dino/dino_vitbase16_pretrain/dino_vitbase16_pretrain.pth               ## for part segmentation
+
+## BEiT
+https://drive.google.com/drive/folders/1JSNzbxc9MBpNIhMRP8Vd0FFk7K5hC65q
+
+## MAE 
+https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
+
+## CAE
+https://drive.google.com/drive/folders/1wwhg7nj2GQuU9uthVuQLkEEXEjx90G7g
+
+## iBOT
+https://lf3-nlp-opensource.bytetos.com/obj/nlp-opensource/archive/2022/ibot/vitb_16_rand_mask/checkpoint_teacher.pth
+
+
+

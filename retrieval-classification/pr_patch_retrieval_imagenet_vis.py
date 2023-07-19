@@ -63,8 +63,6 @@ parser.add_argument('-b', '--batch-size', default=4096, type=int,
                     help='mini-batch size (default: 4096), this is the total '
                          'batch size of all GPUs on all nodes when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=0.6, type=float,
-                    metavar='LR', help='initial (base) learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--wd', '--weight-decay', default=1e-6, type=float,
@@ -172,9 +170,6 @@ def main_worker(gpu, ngpus_per_node, args):
             if model_scale == 'base':
                 model = vits.VisionTransformerCAE()
                 checkpoint = torch.load('pretrained_models/cae_base_1600ep.pth', map_location="cpu")
-            elif model_scale == 'large':
-                model = vits.VisionTransformerCAE(embed_dim=1024, depth=24, num_heads=16)
-                checkpoint = torch.load('pretrained_models/cae_large_model_run2.pth', map_location="cpu")
             elif model_scale == 'base_dvae':
                 model = vits.VisionTransformerCAE()
                 checkpoint = torch.load('pretrained_models/cae_dvae_base_1600ep.pth', map_location="cpu")
@@ -186,11 +181,7 @@ def main_worker(gpu, ngpus_per_node, args):
             checkpoint = {k[8:]:v for k, v in checkpoint['model'].items() if k.startswith('encoder.')}
             model.load_state_dict(checkpoint)
             print('model loaded')
-        elif pretrain_model == 'clip':
-            mean = [0.48145466, 0.4578275, 0.40821073]
-            std = [0.26862954, 0.26130258, 0.27577711]
-            model = torch.jit.load('pretrained_models/CLIP-ViT-B-16.pt', map_location="cpu").eval()
-            model = vits.build_clip_model(model.state_dict())
+
         elif pretrain_model == 'mae':
             if model_scale == 'base':
                 model = vits.mae_vit_base_patch16()
@@ -227,17 +218,11 @@ def main_worker(gpu, ngpus_per_node, args):
             partial(torchvision_models.__dict__[args.arch], zero_init_residual=True),
             args.moco_dim, args.moco_mlp_dim, args.moco_t)
 
-    # infer learning rate before changing batch size
-    args.lr = args.lr * args.batch_size / 256
-
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
-
     elif args.gpu is not None:
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
-        # comment out the following line for debugging
-        # raise NotImplementedError("Only DistributedDataParallel is supported.")
     else:
         raise NotImplementedError("gpu id musn't be specified")
 

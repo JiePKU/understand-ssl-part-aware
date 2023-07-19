@@ -26,10 +26,11 @@ This code contains three types of part-level tasks including part retrieval, par
 
 For all the models involved in the experiments including DeiT, MoCo v3, DINO, BEiT, MAE, CAE, and iBOT, we use their official code to implement the encoders. Note that
 for DINO and iBOT, we choose the checkpoint of the teacher models as they have been reported to perform
-better than the student models in their papers.
+better than the student models in their papers. 
 
 The part and object datasets including ADE20K Part and Object, Pascal Part and Object, and LIP Part are avaliable at [[Google Drive](https://drive.google.com/drive/folders/1JSNzbxc9MBpNIhMRP8Vd0FFk7K5hC65q?usp=sharing)]
 
+In light of the absence of the checkpoint of BEiT pretrained on ImageNet1k in its official website, we provide it in the link above. 
 
 ## Reference 
 

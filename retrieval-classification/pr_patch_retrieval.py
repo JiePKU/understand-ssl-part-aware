@@ -62,8 +62,6 @@ parser.add_argument('-b', '--batch-size', default=4096, type=int,
                     help='mini-batch size (default: 4096), this is the total '
                          'batch size of all GPUs on all nodes when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=0.6, type=float,
-                    metavar='LR', help='initial (base) learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--wd', '--weight-decay', default=1e-6, type=float,
@@ -155,9 +153,6 @@ def main_worker(gpu, ngpus_per_node, args):
             if model_scale == 'base':
                 model = vits.VisionTransformerCAE()
                 checkpoint = torch.load('pretrained_models/cae_base_1600ep.pth', map_location="cpu")
-            elif model_scale == 'large':
-                model = vits.VisionTransformerCAE(embed_dim=1024, depth=24, num_heads=16)
-                checkpoint = torch.load('pretrained_models/cae_large_model_run2.pth', map_location="cpu")
             elif model_scale == 'base_dvae':
                 model = vits.VisionTransformerCAE()
                 checkpoint = torch.load('pretrained_models/cae_dvae_base_1600ep.pth', map_location="cpu")
@@ -168,12 +163,6 @@ def main_worker(gpu, ngpus_per_node, args):
                 raise NotImplementedError()
             checkpoint = {k[8:]:v for k, v in checkpoint['model'].items() if k.startswith('encoder.')}
             model.load_state_dict(checkpoint)
-
-        elif pretrain_model == 'clip':
-            mean = [0.48145466, 0.4578275, 0.40821073]
-            std = [0.26862954, 0.26130258, 0.27577711]
-            model = torch.jit.load('pretrained_models/CLIP-ViT-B-16.pt', map_location="cpu").eval()
-            model = vits.build_clip_model(model.state_dict())
 
         elif pretrain_model == 'mae':
             if model_scale == 'base':
@@ -215,8 +204,7 @@ def main_worker(gpu, ngpus_per_node, args):
             partial(torchvision_models.__dict__[args.arch], zero_init_residual=True),
             args.moco_dim, args.moco_mlp_dim, args.moco_t)
 
-    # infer learning rate before changing batch size
-    args.lr = args.lr * args.batch_size / 256
+
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
 
@@ -323,7 +311,7 @@ def main_worker(gpu, ngpus_per_node, args):
         total_state_dict = torch.load(cache_path)
         print("=> loaded cache '{}'".format(cache_path))
 
-    if pretrain_model in ('moco', 'clip', 'dino', 'ibot'):
+    if pretrain_model in ('moco', 'dino', 'ibot'):
         calc_acc(total_state_dict,  'projection')
     calc_acc(total_state_dict,  'embedding')
     calc_acc(total_state_dict, 'cls_token')
@@ -349,22 +337,18 @@ def calc_acc(total_state_dict, target_feature='embedding'):
     print(feature_list.size(0))
     split_flag = True
     split_batch = 64000
-    if feature_list.size(0) < 64000 or feature_list.size(1) < 10000: ###
+    if feature_list.size(0) < 64000 or feature_list.size(1) < 10000:
         feature_list = feature_list.cuda()
         split_flag = False
 
-    # print(patch_names[0])
     part_names = [del_annid(os.path.basename(x)[:-4]) for x in patch_names]
     part_mask_dict = split_part(part_names)
-    # print(part_names[0])
-    # print(part_mask_dict[part_names[0]])
-    # print(part_mask_dict[part_names[0]].shape)
 
-    # sorted_idx_list = []
     batch_size = 16
     if feature_list.size(1) > 6400:
         batch_size = 1
 
+    ### retrieval evaulation ###
     if split_flag:
         all_similarity_list = []
         for splited_feature_list in feature_list.split(split_batch):
@@ -388,6 +372,7 @@ def calc_acc(total_state_dict, target_feature='embedding'):
                 print('sim & sort:', i, time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())))
                 sys.stdout.flush()
 
+    ### calculate ap ###
     ap_list = []
     ap_dict = {}
     for i, similarity in enumerate(similarity_list):
