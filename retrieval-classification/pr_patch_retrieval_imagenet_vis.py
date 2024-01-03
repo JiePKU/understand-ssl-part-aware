@@ -130,12 +130,12 @@ def main_worker(gpu, ngpus_per_node, args):
     # create model
     print("=> creating model '{}'".format(args.arch))
 
+    ## model related settings
     pretrain_model = args.pretrained_model
     model_scale = args.model_scale
-    num_samples_per_cls = 50
+    num_samples_per_cls = 50   
 
     id_list = [
-        # # # 
         # ('00039553', 32),  # cat beard 397520
         # ('00024863', 18),  # dog mouth 104290
         # ('00013660', 4),  # bird 934042
@@ -145,12 +145,13 @@ def main_worker(gpu, ngpus_per_node, args):
         ('00018569', 39),
         ('00001412', 16),
     ]
-    # id_list = []
 
     all_patch_search = -1
 
     mean=[0.485, 0.456, 0.406]
     std=[0.229, 0.224, 0.225]
+
+    ## initialize model with pretrained checkpoints
 
     if args.arch.startswith('vit'):
         if pretrain_model == 'vit':
@@ -216,7 +217,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         model = moco.builder.MoCo_ResNet(
             partial(torchvision_models.__dict__[args.arch], zero_init_residual=True),
-            args.moco_dim, args.moco_mlp_dim, args.moco_t)
+            args.moco_dim, args.moco_mlp_dim, args.moco_t)   ## load parameters in resume
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -254,7 +255,8 @@ def main_worker(gpu, ngpus_per_node, args):
 
     zip_root = f'./patches_zip/{pretrain_model}'
     cache_path = os.path.join(embedding_root, f'embeddings_{pretrain_model}.pth')
-
+    
+    ## specify the path according the given num samples, model size, etc.
     if num_samples_per_cls != 5:
         zip_root = zip_root + f'_{num_samples_per_cls}'
         cache_path = cache_path.replace('.pth', f'_{num_samples_per_cls}.pth')
@@ -263,10 +265,10 @@ def main_worker(gpu, ngpus_per_node, args):
         zip_root = zip_root + f'_{model_scale}'
         cache_path = cache_path.replace('.pth', f'_{model_scale}.pth')
 
+    ## enumerate all patch. This is unnecessary if we only want to use several patches as queries.
     if all_patch_search >= 0:
         zip_root = os.path.join('/home/ssd4/qjy/patch_embed_search', zip_root + f'_all{all_patch_search}')
         id_list = [('{:08d}'.format(i), all_patch_search) for i in range(25000)]
-
 
     os.makedirs(zip_root, exist_ok=True)
     split_ratio = 4
@@ -299,21 +301,21 @@ def main_worker(gpu, ngpus_per_node, args):
                 embedding = embedding.cpu()
                 projection = projection.cpu()
                 cls_token = cls_token.cpu()
-
             else:
                 state = torch.load(image_level_cache_path)
                 embedding, projection, patch_names = state['embedding'], state['projection'], state['patch_names']
 
             total_state_dict['embedding'].extend(list(embedding))
-            # total_state_dict['projection'].extend(list(projection))
+            total_state_dict['projection'].extend(list(projection))
             total_state_dict['cls_token'].extend(list(cls_token))
             assert len(patch_names) == len(patches) and len(patch_names[0]) == 1, (patch_names)
             total_state_dict['patch_names'].extend([os.path.join(patch_root, img_name, x[0]) for x in patch_names])
             if i % 20 == 0:
                 print(i, time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())))
                 sys.stdout.flush()
+        
         """
-        save the extraced feature
+        save the extraced feature if you want
         """
         # os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         # torch.save(total_state_dict, cache_path)
@@ -323,7 +325,7 @@ def main_worker(gpu, ngpus_per_node, args):
         total_state_dict = torch.load(cache_path)
         print("=> loaded cache '{}'".format(cache_path))
 
-    # embedding retrieval
+    # retrieval with embedding and cls_token respectively
     for id_tuple in id_list:
         for image_id, name in enumerate(total_state_dict['patch_names']):
             if id_tuple[0] in name:
@@ -344,13 +346,16 @@ def retrieval(total_state_dicts, query_id, zip_root, target_feature='embedding',
             img.paste(imgs[i], ((imgs[0].width+20) * i, 0))
     else:
         img = imgs[0]
-
     target_path = os.path.join(zip_root, f'{query_id}_{target_feature}.jpg')
-    img.save(target_path)
+    img.save(target_path) ## save the visulized image and return the path
     print(target_path)
     print('#######################################')
     sys.stdout.flush()
 
+"""
+Below is the code to implement retrieval and construct the visualized images
+To see the specific visualization format of constructed images, please refer to Figure 2 of our paper (https://openreview.net/pdf?id=HP7Qpui5YE).
+"""
 
 def _retrieval(total_state_dict, query_id, target_feature='embedding', patch_root=None):
     patch_names = total_state_dict['patch_names']
@@ -358,26 +363,29 @@ def _retrieval(total_state_dict, query_id, target_feature='embedding', patch_roo
     assert len(feature_list) == len(patch_names), (len(feature_list), len(patch_names))
     query_name = os.path.dirname(patch_names[query_id])
     feature_list = torch.stack(feature_list).float()
-    query = feature_list[query_id:query_id+1]
+    query = feature_list[query_id:query_id+1] ## pick up the query feature
 
-    similarity = torch.nn.functional.cosine_similarity(query, feature_list, 1)
-    sims, neighbors = torch.sort(similarity, dim=0, descending=True)
+    similarity = torch.nn.functional.cosine_similarity(query, feature_list, 1) ## cal the cosine similarity
+    sims, neighbors = torch.sort(similarity, dim=0, descending=True) ## sort the similarity by descending order
     assert sims.dim() == 1, sims.size()
 
-    w, h = 10, 10
+    w, h = 10, 10 ## choose the first 100 patches to be visualized
     searched_ids = neighbors[:w*h+1].tolist()
     searched_patch_names = [patch_names[i] for i in searched_ids]
 
+    ## to visualize the retrived results
     img = Image.new("RGB", (56*w + 5*(w-1), 56*h + 5*(h-1)), "white")
     if patch_root is not None:
         query_name = os.path.join(patch_root, '..', query_name)
-    img.paste(Image.open(os.path.join(query_name, 'origin.jpg')), (0, 0))
+    img.paste(Image.open(os.path.join(query_name, 'origin.jpg')), (0, 0)) ## add the orginal image
     drawer = ImageDraw.Draw(img)
+
+    ### mark the query patch with red box
     query_pos = [int(x)//4 for x in searched_patch_names[0].split('/')[-1].split('.')[0].split('_')]
     drawer.rectangle([(query_pos[2], query_pos[0]), (query_pos[3], query_pos[1])], outline="red", width=5)
 
     idx = 0
-    searched_patch_names = searched_patch_names[1:]
+    searched_patch_names = searched_patch_names[1:] ## visualize the rest 99 patches (except itself)
     for i in range(h):
         for j in range(w):
             if i < 4 and j < 4: continue
@@ -386,7 +394,7 @@ def _retrieval(total_state_dict, query_id, target_feature='embedding', patch_roo
             img.paste(Image.open(searched_patch_names[idx]).resize((56, 56)), (j*(56+5), i*(56+5)))
             idx += 1
     print([sims[1:pre].mean().item() for pre in [2, 5, 10, 50, 100]])
-    return img
+    return img ## return the visualized image
 
 if __name__ == '__main__':
     main()
